@@ -1,0 +1,5 @@
+{
+  "name": "MnemoPro",
+  "description": "A professional memory sports training application designed to enhance recall for numbers, cards, and words using React and Gemini AI.",
+  "requestFramePermissions": []
+}

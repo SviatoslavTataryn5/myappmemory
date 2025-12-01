@@ -5,14 +5,10 @@ import { CardView } from './components/CardView';
 import { 
   Brain, 
   Play, 
-  RotateCcw, 
   Trophy, 
   Settings, 
   ChevronLeft, 
   ChevronRight,
-  Eye, 
-  EyeOff, 
-  CheckCircle,
   Timer as TimerIcon,
   Sparkles,
   Binary,
@@ -21,11 +17,11 @@ import {
   Palette,
   BarChart2,
   BookOpen,
-  X,
-  History,
   Trash2,
   ArrowRight,
-  Globe
+  Globe,
+  History,
+  CheckCircle
 } from 'lucide-react';
 
 // --- Localization ---
@@ -58,6 +54,8 @@ const STRINGS = {
     items: "items",
     timeLimit: "Time Limit (seconds)",
     grouping: "Grouping Size",
+    pace: "Auto-Advance Pace",
+    paceDesc: "Items per minute (0 = manual)",
     start: "Start Game",
     generating: "Generating...",
     timeLeft: "Time Left",
@@ -132,6 +130,8 @@ const STRINGS = {
     items: "шт",
     timeLimit: "Ліміт часу (секунди)",
     grouping: "Розмір групи",
+    pace: "Темп авто-показу",
+    paceDesc: "Елементів за хвилину (0 = вручну)",
     start: "Почати гру",
     generating: "Генерування...",
     timeLeft: "Час",
@@ -401,7 +401,7 @@ const GuideView: React.FC<{ onBack: () => void, t: any }> = ({ onBack, t }) => {
 export default function App() {
   const [gameState, setGameState] = useState<GameState>(GameState.MENU);
   const [gameType, setGameType] = useState<GameType>(GameType.NUMBERS);
-  const [settings, setSettings] = useState<GameSettings>({ timeLimit: 60, quantity: 20, grouping: 2 });
+  const [settings, setSettings] = useState<GameSettings>({ timeLimit: 60, quantity: 20, grouping: 2, pace: 0 });
   const [lang, setLang] = useState<'en' | 'uk'>('en');
   
   const t = STRINGS[lang];
@@ -417,6 +417,7 @@ export default function App() {
   
   // Recall State
   const [recallIndex, setRecallIndex] = useState(0); // Current item being recalled
+  const [memorizeIndex, setMemorizeIndex] = useState(0); // Current item being memorized (if pace > 0)
   const [numbersInput, setNumbersInput] = useState<string>('');
   const [binariesInput, setBinariesInput] = useState<string>('');
   const [cardsInput, setCardsInput] = useState<PlayingCard[]>([]);
@@ -432,8 +433,35 @@ export default function App() {
   const [loading, setLoading] = useState(false);
 
   const timerRef = useRef<number | null>(null);
+  const paceTimerRef = useRef<number | null>(null);
   const shuffledImagesRef = useRef<string[]>([]);
   const fullDeckRef = useRef<PlayingCard[]>([]);
+
+  // --- Derived State & Handlers (Hoisted to avoid hook errors) ---
+
+  const memorizeMaxIndex = (gameType === GameType.NUMBERS || gameType === GameType.BINARIES) 
+    ? Math.ceil(settings.quantity / (settings.grouping || 2)) 
+    : settings.quantity;
+
+  const handleMemorizeNext = useCallback(() => {
+    setMemorizeIndex(prev => Math.min(prev + 1, memorizeMaxIndex - 1));
+  }, [memorizeMaxIndex]);
+
+  const handleMemorizePrev = useCallback(() => {
+    setMemorizeIndex(prev => Math.max(prev - 1, 0));
+  }, []);
+
+  // Keyboard support for Memorize Phase
+  useEffect(() => {
+    if (gameState !== GameState.MEMORIZE) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.key === 'ArrowRight') handleMemorizeNext();
+        if (e.key === 'ArrowLeft') handleMemorizePrev();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [gameState, handleMemorizeNext, handleMemorizePrev]);
+
 
   // --- Game Control ---
 
@@ -443,6 +471,7 @@ export default function App() {
     setTimeLeft(settings.timeLimit);
     setCoachTip(null);
     setRecallIndex(0);
+    setMemorizeIndex(0);
 
     // Initialize Data
     if (gameType === GameType.NUMBERS) {
@@ -504,6 +533,10 @@ export default function App() {
       window.clearInterval(timerRef.current);
       timerRef.current = null;
     }
+    if (paceTimerRef.current) {
+      window.clearInterval(paceTimerRef.current);
+      paceTimerRef.current = null;
+    }
   };
 
   useEffect(() => {
@@ -518,9 +551,40 @@ export default function App() {
           return prev - 1;
         });
       }, 1000);
+
+      // Pace Timer
+      if (settings.pace > 0) {
+        let intervalMs = (60 / settings.pace) * 1000;
+        
+        // Adjust for grouping (Digits/Bits per minute -> Groups per minute)
+        if ((gameType === GameType.NUMBERS || gameType === GameType.BINARIES) && settings.grouping) {
+            intervalMs = intervalMs * settings.grouping;
+        }
+
+        paceTimerRef.current = window.setInterval(() => {
+           setMemorizeIndex(prev => {
+             const maxIndex = (gameType === GameType.NUMBERS || gameType === GameType.BINARIES) 
+                ? Math.ceil(settings.quantity / (settings.grouping || 2)) 
+                : settings.quantity;
+
+             if (prev < maxIndex - 1) return prev + 1;
+             return prev;
+           });
+        }, intervalMs);
+      }
     }
     return () => stopTimer();
-  }, [gameState]);
+  }, [gameState, settings.pace, settings.quantity, settings.grouping, gameType]);
+
+  // Auto scroll to memorized item
+  useEffect(() => {
+     if(gameState === GameState.MEMORIZE) {
+         const el = document.getElementById(`mem-item-${memorizeIndex}`);
+         if (el) {
+             el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+         }
+     }
+  }, [memorizeIndex, gameState]);
 
   const startRecall = () => {
     setGameState(GameState.RECALL);
@@ -556,7 +620,7 @@ export default function App() {
     } else if (gameType === GameType.CARDS) {
       total = cardsData.length;
       cardsData.forEach((card, idx) => {
-        // Compare Rank and Suit. Ignore unique ID prefix or suffix
+        // Compare Rank and Suit
         const inputCard = cardsInput[idx];
         if (inputCard && inputCard.rank === card.rank && inputCard.suit === card.suit) score++;
         else mistakes++;
@@ -719,7 +783,6 @@ export default function App() {
       <div className="bg-slate-900/50 p-8 rounded-2xl border border-slate-800">
         <h2 className="text-2xl font-bold mb-6 flex items-center gap-2 capitalize">
           <Settings className="text-brand-500" /> 
-          {/* Helper for title */}
           {gameType === GameType.NUMBERS && t.numbers}
           {gameType === GameType.BINARIES && t.binaries}
           {gameType === GameType.CARDS && t.cards}
@@ -758,6 +821,27 @@ export default function App() {
             <div className="text-right text-brand-400 font-mono mt-1">{settings.timeLimit}s</div>
           </div>
 
+          <div>
+            <label className="block text-sm text-slate-400 mb-2">{t.pace}</label>
+            <input 
+              type="range" 
+              min="0" 
+              max="100" 
+              step="10"
+              value={settings.pace}
+              onChange={(e) => setSettings({...settings, pace: parseInt(e.target.value)})}
+              className="w-full accent-brand-500"
+            />
+            <div className="text-right text-brand-400 font-mono mt-1 flex justify-end gap-2 items-center">
+                {settings.pace === 0 ? (
+                    <span className="text-slate-500 text-xs">Manual Mode</span>
+                ) : (
+                    <span>{settings.pace} items/min</span>
+                )}
+            </div>
+            <p className="text-xs text-slate-500 mt-1">{t.paceDesc}</p>
+          </div>
+
           {(gameType === GameType.NUMBERS || gameType === GameType.BINARIES) && (
               <div>
                 <label className="block text-sm text-slate-400 mb-2">{t.grouping}</label>
@@ -788,39 +872,73 @@ export default function App() {
   );
 
   const renderMemorize = () => {
+    const getItemStyle = (idx: number) => {
+        const isCurrent = idx === memorizeIndex;
+        if (isCurrent) {
+            return 'ring-4 ring-yellow-400 scale-105 z-10 shadow-[0_0_20px_rgba(250,204,21,0.5)] bg-slate-800 transition-all duration-300';
+        }
+        return settings.pace > 0 ? 'opacity-30 grayscale transition-all duration-300' : 'transition-all duration-300';
+    };
+
+    const getGroupStyle = (idx: number) => {
+       const isCurrent = idx === memorizeIndex;
+       if (isCurrent) {
+           return 'bg-brand-900 text-white shadow-[0_0_15px_rgba(14,165,233,0.5)] scale-110 rounded px-1 transition-all duration-200';
+       }
+       return settings.pace > 0 ? 'opacity-20 transition-all duration-200' : 'opacity-80 transition-all duration-200';
+    }
+
     return (
       <div className="h-screen flex flex-col pt-4 px-4 pb-4">
         <div className="flex justify-between items-center mb-4 max-w-6xl mx-auto w-full">
            <TimerDisplay seconds={timeLeft} total={settings.timeLimit} t={t} />
-           <button 
-             onClick={startRecall}
-             className="ml-4 bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-2 rounded-lg font-bold text-sm whitespace-nowrap"
-           >
-             {t.finish}
-           </button>
         </div>
 
-        <div className="flex-1 overflow-auto bg-slate-900/50 rounded-2xl border border-slate-800 p-6 max-w-6xl mx-auto w-full shadow-inner custom-scrollbar">
+        <div className="flex-1 overflow-auto bg-slate-900/50 rounded-2xl border border-slate-800 p-6 max-w-6xl mx-auto w-full shadow-inner custom-scrollbar relative mb-4">
+          
+          {settings.pace > 0 && <div className="absolute inset-0 z-0 pointer-events-none"></div>}
+
           {gameType === GameType.NUMBERS && (
-            <div className="flex flex-wrap justify-center gap-x-4 gap-y-2 font-mono text-3xl sm:text-4xl tracking-widest leading-relaxed text-slate-300">
+            <div className="flex flex-wrap justify-center gap-x-4 gap-y-4 font-mono text-3xl sm:text-4xl tracking-widest leading-relaxed text-slate-300">
               {numbersData.match(new RegExp(`.{1,${settings.grouping}}`, 'g'))?.map((group, i) => (
-                <span key={i} className="whitespace-nowrap">{group}</span>
+                <span 
+                    key={i} 
+                    id={`mem-item-${i}`}
+                    className={`whitespace-nowrap ${getGroupStyle(i)} cursor-pointer`}
+                    onClick={() => setMemorizeIndex(i)}
+                >
+                    {group}
+                </span>
               ))}
             </div>
           )}
 
           {gameType === GameType.BINARIES && (
-            <div className="flex flex-wrap justify-center gap-x-4 gap-y-2 font-mono text-3xl sm:text-4xl tracking-widest leading-relaxed text-green-400 font-bold">
+            <div className="flex flex-wrap justify-center gap-x-4 gap-y-4 font-mono text-3xl sm:text-4xl tracking-widest leading-relaxed text-green-400 font-bold">
               {binariesData.match(new RegExp(`.{1,${settings.grouping}}`, 'g'))?.map((group, i) => (
-                <span key={i} className="whitespace-nowrap">{group}</span>
+                <span 
+                    key={i} 
+                    id={`mem-item-${i}`}
+                    className={`whitespace-nowrap ${getGroupStyle(i)} cursor-pointer`}
+                    onClick={() => setMemorizeIndex(i)}
+                >
+                    {group}
+                </span>
               ))}
             </div>
           )}
 
           {gameType === GameType.CARDS && (
             <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-4 justify-items-center">
-              {cardsData.map((card) => (
-                <CardView key={card.id} card={card} />
+              {cardsData.map((card, idx) => (
+                <div 
+                    key={card.id} 
+                    id={`mem-item-${idx}`} 
+                    className={`rounded-lg cursor-pointer ${getItemStyle(idx)}`}
+                    onClick={() => setMemorizeIndex(idx)}
+                >
+                    <CardView card={card} />
+                </div>
               ))}
             </div>
           )}
@@ -828,7 +946,12 @@ export default function App() {
           {gameType === GameType.WORDS && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
               {wordsData.map((word, idx) => (
-                <div key={idx} className="bg-slate-800 p-4 rounded-lg text-center text-lg font-medium text-slate-200 border border-slate-700">
+                <div 
+                    key={idx} 
+                    id={`mem-item-${idx}`}
+                    className={`bg-slate-800 p-4 rounded-lg text-center text-lg font-medium text-slate-200 border border-slate-700 cursor-pointer ${getItemStyle(idx)}`}
+                    onClick={() => setMemorizeIndex(idx)}
+                >
                   <span className="text-xs text-slate-500 block mb-1">#{idx + 1}</span>
                   {word}
                 </div>
@@ -839,7 +962,12 @@ export default function App() {
           {gameType === GameType.NAMES_FACES && (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-6">
               {namesData.map((nf, idx) => (
-                <div key={nf.id} className="bg-slate-800 p-4 rounded-xl border border-slate-700 flex flex-col items-center text-center">
+                <div 
+                    key={nf.id} 
+                    id={`mem-item-${idx}`}
+                    className={`bg-slate-800 p-4 rounded-xl border border-slate-700 flex flex-col items-center text-center cursor-pointer ${getItemStyle(idx)}`}
+                    onClick={() => setMemorizeIndex(idx)}
+                >
                    <div className="relative w-24 h-24 mb-3">
                       <div className="absolute top-0 left-0 bg-brand-500 text-white text-xs font-bold w-6 h-6 rounded-full flex items-center justify-center border-2 border-slate-800">
                         {idx + 1}
@@ -855,7 +983,12 @@ export default function App() {
           {gameType === GameType.IMAGES && (
              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
                 {imagesData.map((url, idx) => (
-                   <div key={idx} className="relative aspect-square bg-slate-800 rounded-lg overflow-hidden border border-slate-700">
+                   <div 
+                        key={idx} 
+                        id={`mem-item-${idx}`}
+                        className={`relative aspect-square bg-slate-800 rounded-lg overflow-hidden border border-slate-700 cursor-pointer ${getItemStyle(idx)}`}
+                        onClick={() => setMemorizeIndex(idx)}
+                   >
                       <div className="absolute top-2 left-2 bg-black/60 text-white text-xs px-2 py-1 rounded backdrop-blur">
                         #{idx + 1}
                       </div>
@@ -868,22 +1001,58 @@ export default function App() {
           {gameType === GameType.COLORS && (
             <div className="flex flex-wrap gap-4 justify-center content-start">
                {colorsData.map((hex, idx) => (
-                 <div key={idx} className="w-20 h-20 sm:w-24 sm:h-24 rounded-xl shadow-lg flex items-center justify-center text-black/20 font-bold text-2xl border-2 border-white/10" style={{ backgroundColor: hex }}>
+                 <div 
+                    key={idx} 
+                    id={`mem-item-${idx}`}
+                    className={`w-20 h-20 sm:w-24 sm:h-24 rounded-xl shadow-lg flex items-center justify-center text-black/20 font-bold text-2xl border-2 border-white/10 cursor-pointer ${getItemStyle(idx)}`} 
+                    style={{ backgroundColor: hex }}
+                    onClick={() => setMemorizeIndex(idx)}
+                 >
                     {idx + 1}
                  </div>
                ))}
             </div>
           )}
         </div>
+
+        {/* Footer Navigation */}
+        <div className="max-w-6xl mx-auto w-full flex items-center justify-between">
+             <div className="flex items-center gap-4">
+                 <button 
+                     onClick={handleMemorizePrev}
+                     disabled={memorizeIndex === 0}
+                     className="bg-slate-800 hover:bg-slate-700 text-white p-3 rounded-full disabled:opacity-30 transition-colors border border-slate-700"
+                 >
+                     <ChevronLeft size={24} />
+                 </button>
+                 
+                 <div className="text-slate-500 font-mono text-sm">
+                    {memorizeIndex + 1} / {memorizeMaxIndex}
+                 </div>
+
+                 <button 
+                     onClick={handleMemorizeNext}
+                     disabled={memorizeIndex >= memorizeMaxIndex - 1}
+                     className="bg-slate-800 hover:bg-slate-700 text-white p-3 rounded-full disabled:opacity-30 transition-colors border border-slate-700"
+                 >
+                     <ChevronRight size={24} />
+                 </button>
+             </div>
+
+             <button 
+                onClick={startRecall}
+                className="ml-4 bg-emerald-600 hover:bg-emerald-500 text-white px-8 py-3 rounded-xl font-bold text-lg shadow-lg shadow-emerald-500/20"
+             >
+                {t.finish}
+             </button>
+        </div>
       </div>
     );
   };
 
   const renderRecall = () => {
-    // Check if we use the sequential "One Item" stepper or the continuous text area
     const isDiscrete = [GameType.CARDS, GameType.WORDS, GameType.NAMES_FACES, GameType.IMAGES, GameType.COLORS].includes(gameType);
 
-    // -- Sequential Stepper Handlers --
     const goToNext = () => {
         if (recallIndex < settings.quantity - 1) {
             setRecallIndex(prev => prev + 1);
@@ -911,14 +1080,12 @@ export default function App() {
             setColorsInput(newInputs);
         }
         
-        // Auto-advance
         if (recallIndex < settings.quantity - 1) {
             setTimeout(() => setRecallIndex(prev => prev + 1), 150);
         }
     };
 
-    // Header for Recall
-    const RecallHeader = () => (
+    const recallHeader = (
       <div className="flex justify-between items-center mb-4 max-w-4xl mx-auto w-full">
          <div className="flex items-center gap-3">
              <h2 className="text-2xl font-bold text-white flex items-center gap-2">
@@ -939,11 +1106,10 @@ export default function App() {
       </div>
     );
 
-    // --- Continuous Input (Numbers/Binary) ---
     if (!isDiscrete) {
         return (
             <div className="h-screen flex flex-col pt-4 px-4 pb-4">
-                <RecallHeader />
+                {recallHeader}
                 <div className="flex-1 max-w-4xl mx-auto w-full bg-slate-900/50 rounded-2xl border border-slate-800 p-6 flex flex-col">
                     <label className="text-slate-400 mb-2 block">
                         {gameType === GameType.NUMBERS ? t.typeNum : t.typeBin}
@@ -964,9 +1130,6 @@ export default function App() {
         );
     }
 
-    // --- Discrete Input Stepper ---
-    
-    // Helper to render the previous few items for context
     const renderContextStrip = () => {
         const start = Math.max(0, recallIndex - 4);
         const end = recallIndex;
@@ -999,23 +1162,20 @@ export default function App() {
 
     return (
         <div className="h-screen flex flex-col pt-4 px-4 pb-4">
-            <RecallHeader />
+            {recallHeader}
             
             <div className="flex-1 max-w-4xl mx-auto w-full bg-slate-900/50 rounded-2xl border border-slate-800 p-4 sm:p-6 flex flex-col relative overflow-hidden">
-                 {/* Progress Bar */}
                  <div className="absolute top-0 left-0 w-full h-1 bg-slate-800">
                      <div className="h-full bg-brand-500 transition-all duration-300" style={{width: `${((recallIndex + 1) / settings.quantity) * 100}%`}}></div>
                  </div>
 
                  {renderContextStrip()}
 
-                 {/* Main Input Area */}
                  <div className="flex-1 flex flex-col items-center justify-center min-h-0">
                      
                      <div className="text-center mb-6">
                         <h3 className="text-slate-400 text-sm uppercase tracking-wider mb-2">{t.item} #{recallIndex + 1}</h3>
                         
-                        {/* Prompt Display (for Name/Faces) */}
                         {gameType === GameType.NAMES_FACES && (
                             <div className="mb-4 flex flex-col items-center">
                                 <img src={namesData[recallIndex]?.avatarUrl} className="w-32 h-32 rounded-full bg-slate-800 mb-2 border-4 border-slate-700" />
@@ -1024,10 +1184,8 @@ export default function App() {
                         )}
                      </div>
 
-                     {/* Input Controls */}
                      <div className="w-full max-w-2xl overflow-y-auto custom-scrollbar flex-1 flex flex-col items-center">
                          
-                         {/* Text Inputs (Words / Names) */}
                          {(gameType === GameType.WORDS || gameType === GameType.NAMES_FACES) && (
                              <div className="w-full max-w-md">
                                  <input 
@@ -1056,7 +1214,6 @@ export default function App() {
                              </div>
                          )}
 
-                         {/* Card Keyboard */}
                          {gameType === GameType.CARDS && (
                              <div className="w-full">
                                  <div className="flex justify-center mb-6 min-h-[144px]">
@@ -1072,7 +1229,6 @@ export default function App() {
                                  </div>
                                  
                                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
-                                     {/* Group by suit */}
                                      {[CardSuit.SPADES, CardSuit.HEARTS, CardSuit.CLUBS, CardSuit.DIAMONDS].map(suit => (
                                          <div key={suit} className="flex gap-1 mb-2 overflow-x-auto pb-2 justify-center">
                                              <div className="w-6 flex items-center justify-center text-xl text-slate-500">{suit}</div>
@@ -1091,7 +1247,6 @@ export default function App() {
                              </div>
                          )}
 
-                         {/* Colors Palette */}
                          {gameType === GameType.COLORS && (
                              <div className="grid grid-cols-5 gap-4">
                                  {COLORS_PALETTE.map(c => (
@@ -1106,7 +1261,6 @@ export default function App() {
                              </div>
                          )}
 
-                         {/* Images Grid */}
                          {gameType === GameType.IMAGES && (
                              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3 max-h-[400px] overflow-y-auto p-2">
                                  {shuffledImagesRef.current.map((url, i) => (
@@ -1116,7 +1270,6 @@ export default function App() {
                                         className={`relative w-20 h-20 rounded-lg overflow-hidden border-2 transition-all ${imagesInput[recallIndex] === url ? 'border-brand-500 ring-2 ring-brand-500' : 'border-slate-700 hover:border-slate-500'}`}
                                      >
                                          <img src={url} className="w-full h-full object-cover" />
-                                         {/* Mark used images visually? Optional, but might help */}
                                          {imagesInput.includes(url) && imagesInput[recallIndex] !== url && (
                                              <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
                                                  <CheckCircle size={16} className="text-white/50" />
@@ -1130,7 +1283,6 @@ export default function App() {
                      </div>
                  </div>
 
-                 {/* Navigation Footer */}
                  <div className="mt-6 flex justify-between items-center border-t border-slate-800 pt-4">
                      <button 
                          onClick={goToPrev}
@@ -1182,7 +1334,6 @@ export default function App() {
         ))}
       </div>
 
-      {/* Comparison View */}
       <div className="bg-slate-900/50 rounded-2xl border border-slate-800 overflow-hidden mb-8">
          <div className="p-4 bg-slate-800/50 border-b border-slate-800 font-bold text-slate-300 flex justify-between">
            <span>{t.comparison}</span>
@@ -1193,7 +1344,7 @@ export default function App() {
                 <div className="font-mono text-xl tracking-widest break-all">
                   {(gameType === GameType.NUMBERS ? numbersData : binariesData).split('').map((char, i) => {
                      const inputChar = (gameType === GameType.NUMBERS ? numbersInput : binariesInput)[i];
-                     let color = 'text-slate-600'; // Missing
+                     let color = 'text-slate-600';
                      if (inputChar === char) color = 'text-green-500';
                      else if (inputChar) color = 'text-red-500';
                      
@@ -1210,7 +1361,6 @@ export default function App() {
                 <div className="flex flex-wrap gap-2">
                    {cardsData.map((card, i) => {
                        const inputCard = cardsInput[i];
-                       // Check rank/suit only
                        const isCorrect = inputCard && inputCard.rank === card.rank && inputCard.suit === card.suit;
                        
                        return (
@@ -1299,17 +1449,15 @@ export default function App() {
            <Sparkles size={20} /> {t.aiCoach}
         </h3>
         {coachTip ? (
-            <p className="text-indigo-100 leading-relaxed italic">
-                "{coachTip}"
-            </p>
+            <p className="text-indigo-100 leading-relaxed italic">"{coachTip}"</p>
         ) : (
-            <div className="text-center py-4">
+            <div className="text-center">
                 <button 
-                  onClick={getGeminiAdvice}
-                  disabled={loading}
-                  className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2 rounded-lg font-medium text-sm transition-colors"
+                    onClick={getGeminiAdvice}
+                    disabled={loading}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2 rounded-full font-bold shadow-lg shadow-indigo-500/20 disabled:opacity-50 transition-all"
                 >
-                  {loading ? t.asking : t.askCoach}
+                    {loading ? t.asking : t.askCoach}
                 </button>
             </div>
         )}
@@ -1318,22 +1466,22 @@ export default function App() {
       <div className="flex justify-center gap-4">
         <button 
           onClick={() => setGameState(GameState.MENU)}
-          className="px-6 py-3 rounded-xl border border-slate-700 text-slate-300 hover:bg-slate-800 transition-colors"
+          className="bg-slate-800 hover:bg-slate-700 text-white px-8 py-3 rounded-xl font-bold transition-all border border-slate-700"
         >
           {t.mainMenu}
         </button>
         <button 
-          onClick={() => { setGameState(GameState.SETUP); setResult(null); }}
-          className="px-6 py-3 rounded-xl bg-brand-600 text-white hover:bg-brand-500 transition-colors flex items-center gap-2"
+          onClick={() => { setGameState(GameState.SETUP); }}
+          className="bg-brand-600 hover:bg-brand-500 text-white px-8 py-3 rounded-xl font-bold transition-all shadow-lg shadow-brand-500/20"
         >
-          <RotateCcw size={18} /> {t.playAgain}
+          {t.playAgain}
         </button>
       </div>
     </div>
   );
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-brand-500 selection:text-white">
+    <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-brand-500/30">
       {gameState === GameState.MENU && renderMainMenu()}
       {gameState === GameState.SETUP && renderSetup()}
       {gameState === GameState.MEMORIZE && renderMemorize()}

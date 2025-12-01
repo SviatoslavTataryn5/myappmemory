@@ -43,6 +43,7 @@ export interface GameSettings {
   timeLimit: number; // in seconds
   quantity: number; // number of items
   grouping?: number; // for numbers/binaries
+  pace: number; // items per minute (0 = off)
 }
 
 export interface AnalysisResult {
